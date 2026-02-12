@@ -38,21 +38,27 @@ ADMIN_KEY = "test-admin-key"
 
 @pytest.fixture()
 def client() -> TestClient:
-    """TestClient with no auth headers — for testing 401 scenarios."""
-    return TestClient(app, raise_server_exceptions=False)
+    """TestClient with no auth headers — for testing 401 scenarios.
+
+    Uses context manager so the lifespan events run (stores are initialised).
+    """
+    with TestClient(app, raise_server_exceptions=False) as tc:
+        yield tc
 
 
 @pytest.fixture()
 def auth_client() -> TestClient:
     """TestClient pre-loaded with a valid X-API-Key header."""
-    return TestClient(app, headers={"X-API-Key": API_KEY}, raise_server_exceptions=False)
+    with TestClient(app, headers={"X-API-Key": API_KEY}, raise_server_exceptions=False) as tc:
+        yield tc
 
 
 @pytest.fixture()
 def admin_client() -> TestClient:
     """TestClient with both API key and admin key headers."""
-    return TestClient(
+    with TestClient(
         app,
         headers={"X-API-Key": API_KEY, "X-Admin-Key": ADMIN_KEY},
         raise_server_exceptions=False,
-    )
+    ) as tc:
+        yield tc

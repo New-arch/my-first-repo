@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import traceback
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,17 +12,45 @@ from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.middleware.request_id import RequestIdMiddleware
+from app.routers import apis, sessions
+from app.services.docs_store import DocsStore
+from app.services.session_store import SessionStore
 
 logger = logging.getLogger(__name__)
 
+
 # ---------------------------------------------------------------------------
-# App factory
+# Lifespan — initialise stores on startup
+# ---------------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup: init docs store + session store. Shutdown: cleanup."""
+    # Docs store
+    docs_store = DocsStore()
+    docs_store.scan()
+    app.state.docs_store = docs_store
+
+    # Session store
+    app.state.session_store = SessionStore()
+
+    logger.info(
+        "Startup complete — %d APIs indexed", len(docs_store.list_apis())
+    )
+    yield
+    logger.info("Shutdown")
+
+
+# ---------------------------------------------------------------------------
+# App
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
     title="Marketplace API Assistant",
     description="AI-powered assistant for marketplace API documentation",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # ---------------------------------------------------------------------------
@@ -44,6 +73,13 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Request-Id"],
 )
+
+# ---------------------------------------------------------------------------
+# Routers
+# ---------------------------------------------------------------------------
+
+app.include_router(apis.router)
+app.include_router(sessions.router)
 
 
 # ---------------------------------------------------------------------------
