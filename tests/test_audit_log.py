@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -122,7 +122,7 @@ class TestJSONFormatter:
 class TestAuditLogIntegration:
     """G2.17–G2.18: Audit log integration tests with mocked agent."""
 
-    @patch("app.routers.chat.run_agent")
+    @patch("app.routers.chat.run_agent", new_callable=AsyncMock)
     def test_chat_produces_audit_log(self, mock_run, auth_client, caplog):
         """G2.17: /chat request produces audit log with expected fields."""
         mock_run.return_value = _mock_agent_result()
@@ -146,7 +146,7 @@ class TestAuditLogIntegration:
         assert record.latency_ms > 0
         assert record.request_id is not None
 
-    @patch("app.routers.chat.run_agent")
+    @patch("app.routers.chat.run_agent", new_callable=AsyncMock)
     def test_audit_log_does_not_contain_message(self, mock_run, auth_client, caplog):
         """G2.18: Audit log does NOT contain message content."""
         mock_run.return_value = _mock_agent_result()

@@ -11,8 +11,11 @@ Security controls:
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Dict, List
+
+from claude_agent_sdk import tool as sdk_tool, create_sdk_mcp_server
 
 from app.services.docs_store import DocsStore
 
@@ -73,3 +76,53 @@ def search_api_docs(docs_store: DocsStore, query: str) -> List[Dict[str, Any]]:
         }
         for r in results
     ]
+
+
+# ---------------------------------------------------------------------------
+# MCP server factory for Claude Agent SDK (FR-9)
+# ---------------------------------------------------------------------------
+
+
+def create_docs_mcp_server(docs_store: DocsStore):
+    """Build an in-process MCP server exposing doc tools via Claude Agent SDK.
+
+    The @sdk_tool closures capture `docs_store` so the server can be created
+    at runtime with the correct store reference.
+    """
+
+    @sdk_tool(
+        "list_available_apis",
+        "Return all indexed marketplace APIs with their documentation file inventory.",
+        {},
+    )
+    async def list_apis_tool(args: Dict[str, Any]) -> Dict[str, Any]:
+        _log_tool_call("list_available_apis", {})
+        result = list_available_apis(docs_store)
+        return {"content": [{"type": "text", "text": json.dumps(result, default=str)}]}
+
+    @sdk_tool(
+        "read_api_doc",
+        "Read a specific documentation file for a given API. "
+        "Use list_available_apis first to discover valid API names and filenames.",
+        {"api_name": str, "filename": str},
+    )
+    async def read_doc_tool(args: Dict[str, Any]) -> Dict[str, Any]:
+        _log_tool_call("read_api_doc", {"api_name": args.get("api_name", ""), "filename": args.get("filename", "")})
+        content = read_api_doc(docs_store, args.get("api_name", ""), args.get("filename", ""))
+        return {"content": [{"type": "text", "text": content}]}
+
+    @sdk_tool(
+        "search_api_docs",
+        "Search across all API documentation for a keyword or phrase. Returns matching lines with context.",
+        {"query": str},
+    )
+    async def search_docs_tool(args: Dict[str, Any]) -> Dict[str, Any]:
+        _log_tool_call("search_api_docs", {"query": args.get("query", "")})
+        results = search_api_docs(docs_store, args.get("query", ""))
+        return {"content": [{"type": "text", "text": json.dumps(results, default=str)}]}
+
+    return create_sdk_mcp_server(
+        name="marketplace-docs",
+        version="1.0.0",
+        tools=[list_apis_tool, read_doc_tool, search_docs_tool],
+    )

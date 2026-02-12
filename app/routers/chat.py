@@ -76,7 +76,7 @@ async def chat(body: ChatRequest, request: Request):
     # --- Run the agent ---
     start_time = time.time()
     try:
-        result: OrchestratorResult = run_agent(
+        result: OrchestratorResult = await run_agent(
             message=body.message,
             session_id=body.session_id,
             docs_store=docs_store,

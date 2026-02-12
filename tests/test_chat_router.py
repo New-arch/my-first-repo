@@ -6,7 +6,7 @@ The agent is mocked so no ANTHROPIC_API_KEY is needed.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -43,7 +43,7 @@ def _mock_agent_result():
 class TestChatEndpoint:
     """G2.8–G2.13: /chat endpoint with mocked agent."""
 
-    @patch("app.routers.chat.run_agent")
+    @patch("app.routers.chat.run_agent", new_callable=AsyncMock)
     def test_valid_chat_request(self, mock_run, auth_client):
         """G2.8: POST /chat with valid session + message returns 200."""
         mock_run.return_value = _mock_agent_result()
@@ -58,7 +58,7 @@ class TestChatEndpoint:
         assert data["session_id"] == session_id
         assert data["message"] == "The Petstore API allows you to manage pets in a store."
 
-    @patch("app.routers.chat.run_agent")
+    @patch("app.routers.chat.run_agent", new_callable=AsyncMock)
     def test_invalid_session_id(self, mock_run, auth_client):
         """G2.9: POST /chat with invalid session_id returns 404."""
         resp = auth_client.post("/chat", json={
@@ -85,7 +85,7 @@ class TestChatEndpoint:
         })
         assert resp.status_code == 422
 
-    @patch("app.routers.chat.run_agent")
+    @patch("app.routers.chat.run_agent", new_callable=AsyncMock)
     def test_response_shape(self, mock_run, auth_client):
         """G2.12: Response has session_id, agent_used, message, request_id."""
         mock_run.return_value = _mock_agent_result()
@@ -105,7 +105,7 @@ class TestChatEndpoint:
         # request_id should be present
         assert data["request_id"] is not None
 
-    @patch("app.routers.chat.run_agent")
+    @patch("app.routers.chat.run_agent", new_callable=AsyncMock)
     def test_message_history_updated(self, mock_run, auth_client):
         """G2.13: Session history includes user + assistant messages after chat."""
         mock_run.return_value = _mock_agent_result()
@@ -131,7 +131,7 @@ class TestChatEndpoint:
 class TestChatEdgeCases:
     """Additional edge-case tests for the chat endpoint."""
 
-    @patch("app.routers.chat.run_agent")
+    @patch("app.routers.chat.run_agent", new_callable=AsyncMock)
     def test_invalid_api_context(self, mock_run, auth_client):
         """Chat with non-existent API in api_context returns 400."""
         session_id = _create_session(auth_client)
@@ -143,7 +143,7 @@ class TestChatEdgeCases:
         assert resp.status_code == 400
         assert "nonexistent_api" in resp.json()["detail"]
 
-    @patch("app.routers.chat.run_agent")
+    @patch("app.routers.chat.run_agent", new_callable=AsyncMock)
     def test_valid_api_context(self, mock_run, auth_client):
         """Chat with valid api_context proceeds normally."""
         mock_run.return_value = _mock_agent_result()
@@ -155,7 +155,7 @@ class TestChatEdgeCases:
         })
         assert resp.status_code == 200
 
-    @patch("app.routers.chat.run_agent", side_effect=Exception("boom"))
+    @patch("app.routers.chat.run_agent", new_callable=AsyncMock, side_effect=Exception("boom"))
     def test_agent_error_returns_502(self, mock_run, auth_client):
         """Agent SDK exception returns 502, not 500 with stack trace."""
         session_id = _create_session(auth_client)
@@ -178,7 +178,7 @@ class TestChatEdgeCases:
         })
         assert resp.status_code in (401, 422)
 
-    @patch("app.routers.chat.run_agent")
+    @patch("app.routers.chat.run_agent", new_callable=AsyncMock)
     def test_token_budget_exhausted(self, mock_run, auth_client):
         """Chat returns 429 when session token budget is exhausted."""
         mock_run.return_value = _mock_agent_result()

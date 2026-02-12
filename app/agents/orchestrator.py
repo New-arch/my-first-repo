@@ -1,25 +1,39 @@
-"""Simplified orchestrator — routes all queries to the Product Manager agent.
+"""Orchestrator — routes queries to specialised sub-agents via Claude Agent SDK.
 
-MVP-2 scope: single agent only.  MVP-3 will add routing to IM + TDL.
+Uses the Claude Agent SDK's query() function with AgentDefinition to
+orchestrate three sub-agents: Product Manager, Integration Manager, and
+Technical Dev Lead.
 
 Security / governance controls:
-- max_tokens per call (SEC-5)
-- configurable timeout (NFR-1)
+- max_turns limit per call (SEC-5)
 - per-session token tracking (SEC-5)
+- permission_mode="bypassPermissions" for automated backend (no interactive prompts)
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-import anthropic
+from claude_agent_sdk import (
+    AgentDefinition,
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ResultMessage,
+    TextBlock,
+    query,
+)
 
-from app.agents.prompts import PRODUCT_MANAGER_PROMPT, build_user_context
-from app.agents.tools import list_available_apis, read_api_doc, search_api_docs
+from app.agents.prompts import (
+    INTEGRATION_MANAGER_PROMPT,
+    ORCHESTRATOR_PROMPT,
+    PRODUCT_MANAGER_PROMPT,
+    TECHNICAL_DEV_LEAD_PROMPT,
+    build_full_prompt,
+)
+from app.agents.tools import create_docs_mcp_server
 from app.config import settings
 from app.models.schemas import UserEnvironment
 from app.services.docs_store import DocsStore
@@ -28,82 +42,14 @@ from app.services.session_store import SessionStore
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Tool definitions for Claude (function-calling format)
+# MCP tool names (prefixed with mcp__{server_name}__{tool_name})
 # ---------------------------------------------------------------------------
 
-_TOOL_DEFINITIONS = [
-    {
-        "name": "list_available_apis",
-        "description": "Return all indexed marketplace APIs with their documentation file inventory.",
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
-    },
-    {
-        "name": "read_api_doc",
-        "description": (
-            "Read a specific documentation file for a given API. "
-            "Use list_available_apis first to discover valid API names and filenames."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "api_name": {
-                    "type": "string",
-                    "description": "The API folder name (e.g. 'petstore')",
-                },
-                "filename": {
-                    "type": "string",
-                    "description": "The doc filename (e.g. 'swagger.md')",
-                },
-            },
-            "required": ["api_name", "filename"],
-        },
-    },
-    {
-        "name": "search_api_docs",
-        "description": "Search across all API documentation for a keyword or phrase. Returns matching lines with context.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The keyword or phrase to search for",
-                },
-            },
-            "required": ["query"],
-        },
-    },
+MCP_TOOLS = [
+    "mcp__marketplace-docs__list_available_apis",
+    "mcp__marketplace-docs__read_api_doc",
+    "mcp__marketplace-docs__search_api_docs",
 ]
-
-
-# ---------------------------------------------------------------------------
-# Tool dispatch
-# ---------------------------------------------------------------------------
-
-
-def _dispatch_tool(
-    tool_name: str, tool_input: Dict[str, Any], docs_store: DocsStore
-) -> str:
-    """Execute a tool call and return the result as a string."""
-    if tool_name == "list_available_apis":
-        result = list_available_apis(docs_store)
-    elif tool_name == "read_api_doc":
-        result = read_api_doc(
-            docs_store,
-            tool_input.get("api_name", ""),
-            tool_input.get("filename", ""),
-        )
-    elif tool_name == "search_api_docs":
-        result = search_api_docs(docs_store, tool_input.get("query", ""))
-    else:
-        result = f"Error: Unknown tool '{tool_name}'"
-
-    if isinstance(result, str):
-        return result
-    return json.dumps(result, default=str)
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +72,7 @@ class OrchestratorResult:
 # ---------------------------------------------------------------------------
 
 
-def run_agent(
+async def run_agent(
     *,
     message: str,
     session_id: str,
@@ -136,12 +82,13 @@ def run_agent(
     user_environment: Optional[UserEnvironment] = None,
     api_context: Optional[List[str]] = None,
 ) -> OrchestratorResult:
-    """Run the PM agent with tool use support.
+    """Run the orchestrator via Claude Agent SDK.
 
-    This is a synchronous function that handles the full tool-use loop:
-    1. Send user message to Claude with tool definitions
-    2. If Claude wants to use a tool, execute it and send the result back
-    3. Repeat until Claude produces a final text response
+    This is an async function that:
+    1. Creates an in-process MCP server for doc tools
+    2. Defines three sub-agents (PM, IM, TDL) via AgentDefinition
+    3. Runs the SDK's query() with the orchestrator prompt
+    4. Collects the final response and token usage from ResultMessage
 
     Args:
         message: The user's message text.
@@ -154,83 +101,80 @@ def run_agent(
 
     Returns:
         OrchestratorResult with the agent's response and metadata.
-
-    Raises:
-        anthropic.APIError: On API failures (caller should handle).
     """
     start_time = time.time()
 
-    # Build the contextualised user message
+    # Build MCP server for documentation tools
+    docs_server = create_docs_mcp_server(docs_store)
+
+    # Build the full prompt with history and context
     available_apis = api_context or docs_store.list_apis()
-    user_content = build_user_context(message, user_environment, available_apis)
+    prompt = build_full_prompt(
+        message=message,
+        history=history,
+        user_environment=user_environment,
+        api_context=api_context,
+        available_apis=available_apis,
+    )
 
-    # Build message list
-    messages: List[Dict[str, Any]] = []
-    if history:
-        messages.extend(history)
-    messages.append({"role": "user", "content": user_content})
+    # Configure the SDK with orchestrator + sub-agents
+    options = ClaudeAgentOptions(
+        system_prompt=ORCHESTRATOR_PROMPT,
+        model="claude-sonnet-4-5-20250929",
+        mcp_servers={"marketplace-docs": docs_server},
+        allowed_tools=MCP_TOOLS + ["Task"],
+        permission_mode="bypassPermissions",
+        max_turns=10,
+        env={"ANTHROPIC_API_KEY": settings.anthropic_api_key},
+        agents={
+            "product_manager": AgentDefinition(
+                description="Answers business/product questions about marketplace APIs",
+                prompt=PRODUCT_MANAGER_PROMPT,
+                tools=MCP_TOOLS,
+            ),
+            "integration_manager": AgentDefinition(
+                description="Advises on API integration, auth, config, error handling",
+                prompt=INTEGRATION_MANAGER_PROMPT,
+                tools=MCP_TOOLS,
+            ),
+            "technical_dev_lead": AgentDefinition(
+                description="Writes production-quality code tailored to user's stack",
+                prompt=TECHNICAL_DEV_LEAD_PROMPT,
+                tools=MCP_TOOLS,
+            ),
+        },
+    )
 
-    # Create client
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    # Run agent and collect result from async iterator
+    final_text = ""
+    agent_used = "orchestrator"
+    tokens_used = 0
 
-    total_tokens = 0
-
-    # Tool-use loop (max 10 iterations to prevent infinite loops)
-    for _ in range(10):
-        response = client.messages.create(
-            model="claude-sonnet-4-5-20250929",
-            max_tokens=settings.max_tokens_per_call,
-            system=PRODUCT_MANAGER_PROMPT,
-            tools=_TOOL_DEFINITIONS,
-            messages=messages,
-            timeout=60.0,
-        )
-
-        # Track tokens
-        if response.usage:
-            total_tokens += response.usage.input_tokens + response.usage.output_tokens
-
-        # Check if we need to handle tool use
-        if response.stop_reason == "tool_use":
-            # Process all tool use blocks
-            tool_results = []
-            for block in response.content:
-                if block.type == "tool_use":
-                    tool_result = _dispatch_tool(
-                        block.name, block.input, docs_store
+    async for msg in query(prompt=prompt, options=options):
+        if isinstance(msg, AssistantMessage):
+            for block in msg.content:
+                if isinstance(block, TextBlock):
+                    final_text = block.text
+                # Detect which sub-agent was invoked via Task tool
+                if hasattr(block, "name") and block.name == "Task":
+                    subagent = getattr(block, "input", {}).get(
+                        "subagent_type", "orchestrator"
                     )
-                    tool_results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": tool_result,
-                        }
-                    )
-
-            # Add assistant message and tool results to conversation
-            messages.append({"role": "assistant", "content": response.content})
-            messages.append({"role": "user", "content": tool_results})
-            continue
-
-        # Extract final text response
-        text_parts = []
-        for block in response.content:
-            if hasattr(block, "text"):
-                text_parts.append(block.text)
-
-        final_message = "\n".join(text_parts) if text_parts else ""
-        break
-    else:
-        final_message = "I apologize, but I was unable to complete the request within the allowed number of steps."
+                    agent_used = subagent
+        elif isinstance(msg, ResultMessage):
+            usage = msg.usage or {}
+            tokens_used = usage.get("input_tokens", 0) + usage.get(
+                "output_tokens", 0
+            )
 
     # Track tokens on the session
-    session_store.track_tokens(session_id, total_tokens)
+    session_store.track_tokens(session_id, tokens_used)
 
     latency_ms = (time.time() - start_time) * 1000
 
     return OrchestratorResult(
-        message=final_message,
-        agent_used="product_manager",
-        tokens_used=total_tokens,
+        message=final_text,
+        agent_used=agent_used,
+        tokens_used=tokens_used,
         latency_ms=latency_ms,
     )

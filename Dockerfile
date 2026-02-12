@@ -6,6 +6,13 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# Node.js 20 (required by claude-agent-sdk's bundled CLI)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Install dependencies in a separate layer for caching
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

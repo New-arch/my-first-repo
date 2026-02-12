@@ -6,7 +6,7 @@ Covers G2.14–G2.16: rate limit enforcement on /chat only.
 from __future__ import annotations
 
 import time
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -34,7 +34,7 @@ def _mock_agent_result():
 class TestRateLimiting:
     """G2.14–G2.16: Rate limiting on /chat."""
 
-    @patch("app.routers.chat.run_agent")
+    @patch("app.routers.chat.run_agent", new_callable=AsyncMock)
     def test_requests_under_limit_succeed(self, mock_run, auth_client):
         """G2.14: Requests under the rate limit all succeed."""
         mock_run.return_value = _mock_agent_result()
