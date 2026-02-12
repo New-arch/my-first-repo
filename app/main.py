@@ -11,10 +11,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings
+from app.middleware.logging import setup_audit_logging
+from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_id import RequestIdMiddleware
-from app.routers import apis, sessions
+from app.routers import apis, chat, sessions
 from app.services.docs_store import DocsStore
 from app.services.session_store import SessionStore
+
+# Structured JSON logging (FR-12)
+setup_audit_logging()
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +65,14 @@ app = FastAPI(
 # 1. Request ID — must be outermost so every response gets the header
 app.add_middleware(RequestIdMiddleware)
 
-# 2. CORS — env-based origins
+# 2. Rate limiter — only affects POST /chat (SEC-5, FR-10.10)
+app.add_middleware(
+    RateLimitMiddleware,
+    max_requests=settings.chat_rate_limit_per_min,
+    window_seconds=60,
+)
+
+# 3. CORS — env-based origins
 _origins = settings.cors_allowed_origins
 if settings.env == "production" and _origins == ["*"]:
     _origins = []  # deny-all by default in production
@@ -80,6 +92,7 @@ app.add_middleware(
 
 app.include_router(apis.router)
 app.include_router(sessions.router)
+app.include_router(chat.router)
 
 
 # ---------------------------------------------------------------------------
