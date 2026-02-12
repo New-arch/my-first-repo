@@ -1,0 +1,39 @@
+services:
+  app:
+    build: .
+    container_name: marketplace-api-assistant
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - ENV=development
+    volumes:
+      # Live-reload marketplace docs without rebuilding
+      - ./marketplace_apis:/app/marketplace_apis:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+
+  # Dev-only: auto-rebuild on code changes
+  app-dev:
+    build: .
+    container_name: marketplace-api-assistant-dev
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - ENV=development
+    volumes:
+      # Mount entire source for live reload
+      - ./app:/app/app:ro
+      - ./marketplace_apis:/app/marketplace_apis:ro
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/app"]
+    restart: unless-stopped
+    profiles:
+      - dev
