@@ -13,6 +13,7 @@ class RenovationProject {
     var startDate: Date
     var targetDate: Date
     var status: String              // "Planning" | "Active" | "On Hold" | "Complete"
+    var remoteID: String?           // UUID assigned by the Go backend; nil in local-only mode
 
     @Relationship(deleteRule: .cascade)
     var rooms: [Room] = []
@@ -56,6 +57,7 @@ class RenovationProject {
 class Room {
     var name: String
     var areaSqm: Double
+    var remoteID: String?           // UUID assigned by the Go backend; nil in local-only mode
 
     @Relationship(deleteRule: .cascade)
     var tasks: [RenovationTask] = []
@@ -85,6 +87,7 @@ class RenovationTask {
     var contractor: String
     var notes: String
     var dueDate: Date?
+    var remoteID: String?           // UUID assigned by the Go backend; nil in local-only mode
 
     init(
         name: String,
@@ -174,9 +177,14 @@ enum ProjectStatus: String, CaseIterable {
 
 @main
 struct RenovationPlannerApp: App {
+    @StateObject private var settings   = AppSettings.shared
+    @StateObject private var syncEngine = SyncEngine(settings: .shared)
+
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environmentObject(settings)
+                .environmentObject(syncEngine)
         }
         .modelContainer(for: [RenovationProject.self, Room.self, RenovationTask.self])
     }
@@ -189,6 +197,8 @@ struct RenovationPlannerApp: App {
 struct ContentView: View {
     @Query(sort: \RenovationProject.name) var projects: [RenovationProject]
     @Environment(\.modelContext) var modelContext
+    @EnvironmentObject var settings:   AppSettings
+    @EnvironmentObject var syncEngine: SyncEngine
 
     @State private var selectedProject: RenovationProject?
     @State private var showingAddProject = false
@@ -209,6 +219,23 @@ struct ContentView: View {
                             .tag(project)
                     }
                     .onDelete(perform: deleteProjects)
+                }
+
+                // ── Backend settings link ─────────────────
+                Section {
+                    NavigationLink(destination: NetworkSettingsView(settings: settings)) {
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("App Settings")
+                                Text(settings.useRemoteBackend ? "Remote backend on" : "Local only")
+                                    .font(.caption)
+                                    .foregroundStyle(settings.useRemoteBackend ? .blue : .secondary)
+                            }
+                        } icon: {
+                            Image(systemName: settings.useRemoteBackend ? "network" : "internaldrive")
+                                .foregroundStyle(settings.useRemoteBackend ? .blue : .secondary)
+                        }
+                    }
                 }
             }
             .navigationTitle("Renovations")
@@ -237,10 +264,24 @@ struct ContentView: View {
                 )
             }
         }
+        .task {
+            // Auto-sync on launch when remote mode is on
+            if settings.useRemoteBackend {
+                await syncEngine.syncAll(into: modelContext)
+            }
+        }
     }
 
     func deleteProjects(at offsets: IndexSet) {
-        for index in offsets { modelContext.delete(projects[index]) }
+        for index in offsets {
+            let project = projects[index]
+            // Capture remoteID before deletion (SwiftData clears it on delete)
+            let rid = project.remoteID
+            modelContext.delete(project)
+            if let rid {
+                Task { await syncEngine.pushDelete(projectRemoteID: rid) }
+            }
+        }
     }
 }
 
@@ -284,6 +325,7 @@ struct ProjectRow: View {
 struct AddProjectSheet: View {
     @Environment(\.modelContext) var modelContext
     @Environment(\.dismiss) var dismiss
+    @EnvironmentObject var syncEngine: SyncEngine
 
     @State private var name = ""
     @State private var address = ""
@@ -341,6 +383,7 @@ struct AddProjectSheet: View {
             status: status
         )
         modelContext.insert(project)
+        Task { await syncEngine.pushCreate(project: project) }
         dismiss()
     }
 }
@@ -386,6 +429,7 @@ struct ProjectDetailView: View {
 struct RoomsTab: View {
     @Bindable var project: RenovationProject
     @Environment(\.modelContext) var modelContext
+    @EnvironmentObject var syncEngine: SyncEngine
     @State private var showingAddRoom = false
 
     var body: some View {
@@ -403,7 +447,12 @@ struct RoomsTab: View {
                     }
                 }
                 .onDelete { offsets in
-                    for idx in offsets { modelContext.delete(project.rooms[idx]) }
+                    for idx in offsets {
+                        let room = project.rooms[idx]
+                        let rid  = room.remoteID
+                        modelContext.delete(room)
+                        if let rid { Task { await syncEngine.pushDelete(roomRemoteID: rid) } }
+                    }
                 }
             } header: {
                 HStack {
@@ -503,6 +552,7 @@ struct BudgetTab: View {
 
 struct ProjectSettingsTab: View {
     @Bindable var project: RenovationProject
+    @EnvironmentObject var syncEngine: SyncEngine
 
     var body: some View {
         Form {
@@ -536,6 +586,17 @@ struct ProjectSettingsTab: View {
             }
         }
         .navigationTitle("Settings")
+        .onChange(of: project.name)        { _, _ in schedulePush() }
+        .onChange(of: project.address)     { _, _ in schedulePush() }
+        .onChange(of: project.totalBudget) { _, _ in schedulePush() }
+        .onChange(of: project.status)      { _, _ in schedulePush() }
+    }
+
+    private func schedulePush() {
+        Task {
+            try? await Task.sleep(for: .milliseconds(800))
+            await syncEngine.pushUpdate(project: project)
+        }
     }
 }
 
@@ -546,6 +607,7 @@ struct ProjectSettingsTab: View {
 struct RoomDetailView: View {
     @Bindable var room: Room
     @Environment(\.modelContext) var modelContext
+    @EnvironmentObject var syncEngine: SyncEngine
     @State private var showingAddTask = false
 
     var body: some View {
@@ -572,7 +634,9 @@ struct RoomDetailView: View {
                             }
                             .swipeActions(edge: .trailing) {
                                 Button(role: .destructive) {
+                                    let rid = task.remoteID
                                     modelContext.delete(task)
+                                    if let rid { Task { await syncEngine.pushDelete(taskRemoteID: rid) } }
                                 } label: {
                                     Label("Delete", systemImage: "trash")
                                 }
@@ -580,6 +644,7 @@ struct RoomDetailView: View {
                             .swipeActions(edge: .leading) {
                                 Button {
                                     task.status = TaskStatus.done.rawValue
+                                    Task { await syncEngine.pushUpdate(task: task) }
                                 } label: {
                                     Label("Done", systemImage: "checkmark.circle")
                                 }
@@ -620,6 +685,7 @@ struct RoomDetailView: View {
 
 struct TaskDetailView: View {
     @Bindable var task: RenovationTask
+    @EnvironmentObject var syncEngine: SyncEngine
 
     var body: some View {
         Form {
@@ -682,6 +748,20 @@ struct TaskDetailView: View {
         }
         .navigationTitle(task.name)
         .navigationBarTitleDisplayMode(.inline)
+        // Debounced push: fires 0.8 s after the last edit to avoid per-keystroke requests
+        .onChange(of: task.name)          { _, _ in schedulePush() }
+        .onChange(of: task.status)        { _, _ in schedulePush() }
+        .onChange(of: task.category)      { _, _ in schedulePush() }
+        .onChange(of: task.estimatedCost) { _, _ in schedulePush() }
+        .onChange(of: task.contractor)    { _, _ in schedulePush() }
+        .onChange(of: task.notes)         { _, _ in schedulePush() }
+    }
+
+    private func schedulePush() {
+        Task {
+            try? await Task.sleep(for: .milliseconds(800))
+            await syncEngine.pushUpdate(task: task)
+        }
     }
 }
 
@@ -797,6 +877,7 @@ struct TaskRow: View {
 struct AddRoomSheet: View {
     let project: RenovationProject
     @Environment(\.dismiss) var dismiss
+    @EnvironmentObject var syncEngine: SyncEngine
 
     @State private var name = ""
     @State private var area = ""
@@ -837,6 +918,9 @@ struct AddRoomSheet: View {
                         let room = Room(name: name.isEmpty ? "Room" : name,
                                        areaSqm: Double(area) ?? 0)
                         project.rooms.append(room)
+                        if let projectRemoteID = project.remoteID {
+                            Task { await syncEngine.pushCreate(room: room, projectRemoteID: projectRemoteID) }
+                        }
                         dismiss()
                     }
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -849,6 +933,7 @@ struct AddRoomSheet: View {
 struct AddTaskSheet: View {
     let room: Room
     @Environment(\.dismiss) var dismiss
+    @EnvironmentObject var syncEngine: SyncEngine
 
     @State private var name = ""
     @State private var category = TaskCategory.other.rawValue
@@ -909,6 +994,9 @@ struct AddTaskSheet: View {
                         )
                         if hasDueDate { task.dueDate = dueDate }
                         room.tasks.append(task)
+                        if let roomRemoteID = room.remoteID {
+                            Task { await syncEngine.pushCreate(task: task, roomRemoteID: roomRemoteID) }
+                        }
                         dismiss()
                     }
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)

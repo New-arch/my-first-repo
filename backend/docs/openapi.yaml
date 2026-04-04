@@ -1,0 +1,522 @@
+openapi: "3.0.3"
+info:
+  title: Renovation Planner API
+  description: |
+    REST API for the Renovation Planner iPad app.
+
+    Supports full CRUD for **Projects**, **Rooms**, and **Tasks**.
+    The app can run in local SwiftData mode or against this service.
+
+    All dates are **ISO 8601 / RFC 3339** strings (e.g. `2026-04-04T00:00:00Z`).
+    All IDs are **UUIDs** (string).
+    Currency amounts are **raw doubles** — the South African Rand prefix `R` is
+    applied by the client, not the API.
+  version: "1.0.0"
+  contact:
+    name: Renovation Planner
+
+servers:
+  - url: http://localhost:8777
+    description: Local Docker (host port 8777 → container 8080)
+
+tags:
+  - name: projects
+    description: Renovation projects
+  - name: rooms
+    description: Rooms within a project
+  - name: tasks
+    description: Renovation tasks within a room
+  - name: health
+    description: Service health
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+
+paths:
+
+  /health:
+    get:
+      tags: [health]
+      summary: Health check
+      operationId: healthCheck
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  # ── Projects ────────────────────────────────────────────────────────────────
+
+  /api/v1/projects:
+    get:
+      tags: [projects]
+      summary: List all projects
+      operationId: listProjects
+      responses:
+        "200":
+          description: Array of projects (no nested rooms)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProjectResponse"
+    post:
+      tags: [projects]
+      summary: Create a project
+      operationId: createProject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectRequest"
+            example:
+              name: "Kitchen Renovation"
+              address: "12 Main Street, Cape Town"
+              total_budget: 250000
+              start_date: "2026-05-01T00:00:00Z"
+              target_date: "2026-08-31T00:00:00Z"
+              status: "Planning"
+      responses:
+        "201":
+          description: Project created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/v1/projects/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+    get:
+      tags: [projects]
+      summary: Get a project with rooms and tasks
+      operationId: getProject
+      responses:
+        "200":
+          description: Project with nested rooms and tasks
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [projects]
+      summary: Update a project
+      operationId: updateProject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectRequest"
+      responses:
+        "200":
+          description: Updated project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [projects]
+      summary: Delete a project (cascades to rooms and tasks)
+      operationId: deleteProject
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Rooms ────────────────────────────────────────────────────────────────────
+
+  /api/v1/projects/{projectID}/rooms:
+    parameters:
+      - name: projectID
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [rooms]
+      summary: List rooms for a project
+      operationId: listRooms
+      responses:
+        "200":
+          description: Array of rooms (no nested tasks)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RoomResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [rooms]
+      summary: Create a room in a project
+      operationId: createRoom
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoomRequest"
+            example:
+              name: "Kitchen"
+              area_sqm: 22.5
+      responses:
+        "201":
+          description: Room created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoomResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/rooms/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+    get:
+      tags: [rooms]
+      summary: Get a room with its tasks
+      operationId: getRoom
+      responses:
+        "200":
+          description: Room with nested tasks
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoomResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [rooms]
+      summary: Update a room
+      operationId: updateRoom
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoomRequest"
+      responses:
+        "200":
+          description: Updated room
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoomResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [rooms]
+      summary: Delete a room (cascades to tasks)
+      operationId: deleteRoom
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Tasks ────────────────────────────────────────────────────────────────────
+
+  /api/v1/rooms/{roomID}/tasks:
+    parameters:
+      - name: roomID
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [tasks]
+      summary: List tasks for a room
+      operationId: listTasks
+      responses:
+        "200":
+          description: Array of tasks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TaskResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [tasks]
+      summary: Create a task in a room
+      operationId: createTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskRequest"
+            example:
+              name: "Lay floor tiles"
+              category: "Tiling"
+              status: "Planned"
+              estimated_cost: 18500
+              contractor: "Cape Tile Co."
+              notes: "Use 600x600 porcelain"
+              due_date: "2026-07-15T00:00:00Z"
+      responses:
+        "201":
+          description: Task created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/tasks/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+    get:
+      tags: [tasks]
+      summary: Get a task
+      operationId: getTask
+      responses:
+        "200":
+          description: Task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [tasks]
+      summary: Update a task
+      operationId: updateTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskRequest"
+      responses:
+        "200":
+          description: Updated task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [tasks]
+      summary: Delete a task
+      operationId: deleteTask
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+# ── Components ────────────────────────────────────────────────────────────────
+
+components:
+
+  parameters:
+    id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      example: "550e8400-e29b-41d4-a716-446655440000"
+
+  responses:
+    BadRequest:
+      description: Bad request — validation error or malformed JSON
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+
+    ProjectStatus:
+      type: string
+      enum: [Planning, Active, "On Hold", Complete]
+      example: "Planning"
+
+    TaskStatus:
+      type: string
+      enum: [Planned, "In Progress", Blocked, Done]
+      example: "Planned"
+
+    TaskCategory:
+      type: string
+      enum: [Electrical, Plumbing, Tiling, Painting, Flooring, Carpentry, Structural, Other]
+      example: "Tiling"
+
+    ProjectRequest:
+      type: object
+      required: [name, start_date, target_date]
+      properties:
+        name:
+          type: string
+          example: "Kitchen Renovation"
+        address:
+          type: string
+          example: "12 Main Street, Cape Town"
+        total_budget:
+          type: number
+          format: double
+          example: 250000
+        start_date:
+          type: string
+          format: date-time
+          example: "2026-05-01T00:00:00Z"
+        target_date:
+          type: string
+          format: date-time
+          example: "2026-08-31T00:00:00Z"
+        status:
+          $ref: "#/components/schemas/ProjectStatus"
+
+    ProjectResponse:
+      allOf:
+        - $ref: "#/components/schemas/ProjectRequest"
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+            rooms:
+              type: array
+              items:
+                $ref: "#/components/schemas/RoomResponse"
+              description: "Only populated on GET /api/v1/projects/{id}"
+
+    RoomRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          example: "Kitchen"
+        area_sqm:
+          type: number
+          format: double
+          example: 22.5
+
+    RoomResponse:
+      allOf:
+        - $ref: "#/components/schemas/RoomRequest"
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            project_id:
+              type: string
+              format: uuid
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+            tasks:
+              type: array
+              items:
+                $ref: "#/components/schemas/TaskResponse"
+              description: "Only populated on GET /api/v1/rooms/{id}"
+
+    TaskRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          example: "Lay floor tiles"
+        category:
+          $ref: "#/components/schemas/TaskCategory"
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        estimated_cost:
+          type: number
+          format: double
+          example: 18500
+        actual_cost:
+          type: number
+          format: double
+          nullable: true
+          example: 19200
+        contractor:
+          type: string
+          example: "Cape Tile Co."
+        notes:
+          type: string
+          example: "Use 600x600 porcelain"
+        due_date:
+          type: string
+          format: date-time
+          nullable: true
+          example: "2026-07-15T00:00:00Z"
+
+    TaskResponse:
+      allOf:
+        - $ref: "#/components/schemas/TaskRequest"
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            room_id:
+              type: string
+              format: uuid
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "not found"

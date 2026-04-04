@@ -1,0 +1,37 @@
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8777:8080"          # host:container — access via http://localhost:8777
+    environment:
+      PORT: "8080"
+      DB_PATH: "/data/renovation.db"
+    volumes:
+      - renovation_data:/data  # SQLite file persisted across restarts
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  renovation_data:
+    driver: local
+
+# Usage:
+#   docker compose up --build        # build image and start
+#   docker compose up -d             # start in background
+#   docker compose logs -f api       # follow structured JSON logs
+#   docker compose down              # stop (data volume preserved)
+#   docker compose down -v           # stop AND delete data volume
+#
+# API base URL:  http://localhost:8777/api/v1
+# Swagger UI:    http://localhost:8777/docs
+# OpenAPI spec:  http://localhost:8777/openapi.yaml
+# Health check:  http://localhost:8777/health
